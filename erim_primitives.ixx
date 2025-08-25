@@ -7,6 +7,7 @@ export module erim_primitives;
 export {
     /// @b atomic is std::atomic_ref. that's the only true way of using atomics,
     /// an object is not atomic, atomic are the operations on memory.
+
     template <typename T>
     using atomic       = std::atomic_ref<T>;
     using atomic_order = std::memory_order;
@@ -99,7 +100,7 @@ export {
     template <unsigned ALIGNAMENT, typename T>
     requires(ALIGNAMENT >= 16)
     struct alignas(ALIGNAMENT) aligned_t<ALIGNAMENT, T> {
-        static constexpr unsigned BITS =  8 * MAX(sizeof(T), ALIGNAMENT);
+        static constexpr unsigned BITS = 8 * MAX(sizeof(T), ALIGNAMENT);
         union {
 #if defined(__SIZEOF_INT128__)
             int128_t i128[BITS / 128];

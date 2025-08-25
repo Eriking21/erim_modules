@@ -5,8 +5,8 @@ namespace erim::HELPER
 {
     template <bool cond>
     struct conditional {
-        template <typename T, typename U>
-        using type = T;
+        template <typename T1, typename T2>
+        using type = T1;
 
         template <
             template <typename... T> class W1,
@@ -17,8 +17,8 @@ namespace erim::HELPER
 
     template <>
     struct conditional<false> {
-        template <typename T, typename U>
-        using type = U;
+        template <typename T1, typename T2>
+        using type = T2;
 
         template <
             template <typename... T> class W1,
