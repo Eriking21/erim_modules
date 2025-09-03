@@ -26,6 +26,9 @@ export {
     template <class T>constexpr bool is_signed_v = Unsigned<T>::exists;
 	template <class T>constexpr bool is_unsigned_v = Signed<T>::exists;
 
+    template <class T>concept ANY_SIGNED = Unsigned<T>::exists;
+	template <class T>concept ANY_UNSIGNED = Signed<T>::exists;
+
     using std::int16_t;
     using std::int32_t;
     using std::int64_t;
