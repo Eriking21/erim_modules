@@ -1,0 +1,290 @@
+/// @copyright (c) 2025, Erivaldo Jair Xavier Mate
+/** @brief
+
+    This module defines fundamental data structures and type utilities for the Erim Modules.
+    It provides generic array types, iterators, join/merge/sort helpers, and variable-length
+    containers. These building blocks are used throughout the codebase to ensure consistency
+    and reusability for basic data handling, independent of threading or concurrency.
+
+    Key features:
+      - Comparable Iterator
+      - Static and Variable length arrays
+**/
+
+module;
+#include <new>
+#include <stdlib.h>
+export module erim_basic_structs;
+import erim_primitives;
+import erim_match_any;
+import erim_conditional;
+
+// clang-format off
+namespace erim
+{
+    struct DataSet;
+    template <typename Base, auto...> struct Iterative;
+
+    export template <typename ElementType, size_t N = 0>
+    using Iterator = Iterative<Iterative<ElementType, N>>;
+
+    export template <typename ElementType>
+    using GenericIterator = Iterator<ElementType>;
+
+    template <GenericIterator, GenericIterator...>
+    struct IterativeList;
+
+    export template <template <class, auto...> class super_t, super_t... vals>
+    requires (sizeof...(vals)>=1)
+    using IteratorList = IterativeList<vals.generic_it()...>;
+
+    export template <typename T, size_t N> using array_t = T[N];
+    export template <typename T> using pointer_t = T*;
+    export template <typename T, size_t N> struct Array;
+    export template <size_t N>  using String = Array<char, N>;
+    export template <size_t N> using string_t = array_t<char, N>;
+    export template <typename T> struct Varlen;
+}
+// clang-format on
+struct DataSet {
+    uint8_t* ptr;
+
+    inline constexpr DataSet(uint8_t* ptr) noexcept : ptr{ptr} {}
+
+    inline constexpr ~DataSet() noexcept {}
+
+    // Recursive LSB-first push
+    template <typename T, size_t n = 0>
+    constexpr inline void push(T val) noexcept {
+        *(ptr++) = static_cast<uint8_t>(val);
+        if constexpr (n + 1 < sizeof(T)) push<T, n + 1>(val >> 8);
+    }
+
+    // Recursive LSB-first pop
+    template <typename T, size_t n = 0>
+    constexpr inline T pop() noexcept {
+        T byte = *(ptr++);
+        if constexpr (n + 1 < sizeof(T))
+            return byte | (pop<T, n + 1>() << 8);
+        else
+            return byte;
+    }
+};
+template <typename T>
+struct erim::Iterative<T, 0> {
+    T* __begin = 0;
+    T* __end   = 0;
+
+    using element_t = T;
+    inline constexpr T& operator[](size_t num) const noexcept {
+        return begin()[num];
+    }
+    inline constexpr size_t size() const noexcept { return __end - __begin; }
+    inline constexpr T* begin() const noexcept { return __begin; }
+    inline constexpr T* end() const noexcept { return __end; }
+
+    friend Iterative operator+(const Iterative val, size_t N) noexcept {
+        return {.__begin = val.__begin + N, .__end = val.__end};
+    }
+    friend Iterative operator-(const Iterative val, size_t N) noexcept {
+        return {.__begin = val.__begin, .__end = val.__end - N};
+    }
+};
+
+template <typename T, size_t N>
+requires(N != 0)
+struct erim::Iterative<T, N> {
+    using element_t = T;
+    T* __begin      = 0;
+
+    inline constexpr T& operator[](size_t num) const noexcept {
+        return begin()[num];
+    }
+    inline constexpr size_t size() const noexcept { return N; }
+    inline constexpr T* begin() const noexcept { return __begin; }
+    inline constexpr T* end() const noexcept { return __begin + N; }
+};
+
+template <typename T, size_t N>
+struct erim::Array {
+   protected:
+    using Array_t = Array<erim::REMOVE::const_t<T>, N>;
+    using array_t = erim::REMOVE::const_t<T>[N];
+    using I       = erim::Iterator<T, N>;
+    using I0      = erim::Iterator<T>;
+    static_assert(N != 0, "Detected zero sized array");
+   public:
+    array_t data;
+    inline constexpr Array() noexcept = default;
+    inline constexpr Array(T (&pp)[N]) noexcept {
+        for (size_t i = 0; i < N; ++i) (data)[i] = pp[i];
+    }
+
+    inline constexpr operator auto() const noexcept { return data; }
+    inline constexpr operator auto() noexcept { return data; }
+    inline constexpr operator I() const noexcept { return {{.__begin = data}}; }
+    inline constexpr operator I() noexcept { return {{.__begin = data}}; }
+
+    inline constexpr I it() noexcept { return {{.__begin = data}}; }
+    inline constexpr I it() const noexcept { return {{.__begin = data}}; }
+
+    inline constexpr I0 generic_it() noexcept { return {{data, data + N}}; }
+    inline constexpr I0 generic_it() const noexcept {
+        return {{data, data + N}};
+    }
+
+    template <auto Func>
+    inline constexpr auto tmp_call(auto... args) {
+        return Func(data, args...);
+    }
+
+    template <auto Func>
+    inline constexpr auto last_tmp_call(auto... args) {
+        return Func(args..., data);
+    }
+
+    inline constexpr Array_t copy() const noexcept {
+        Array_t tmp;
+        for (size_t i = 0; i < N; ++i) (tmp.data)[i] = data[i];
+        return {tmp};
+    }
+};
+
+template <typename Base>
+struct erim::Iterative<Base> : Base {
+    using Base::begin;
+    using Base::end;
+    using Base::size;
+    using Base::operator[];
+    using typename Base::element_t;
+    using Generic = erim::Iterator<element_t>;
+
+    inline constexpr operator element_t*() const noexcept { return begin(); }
+    inline constexpr operator element_t*() noexcept { return begin(); }
+
+    inline constexpr operator Generic() const noexcept {
+        return {{.__begin = begin(), .__end = end()}};
+    }
+    inline constexpr operator Generic() noexcept {
+        return {{.__begin = begin(), .__end = end()}};
+    }
+
+    inline constexpr Generic generic() const noexcept {
+        return {{.__begin = begin(), .__end = end()}};
+    }
+    inline constexpr Generic generic() noexcept {
+        return {{.__begin = begin(), .__end = end()}};
+    }
+
+    inline constexpr bool sort() const noexcept {
+        element_t* aux = new element_t[size()];
+        if (aux) return false;
+        sort_with(aux);
+        delete[] aux;
+        return true;
+    }
+
+    inline constexpr void sort_with(element_t* aux_ptr) const noexcept {
+        for (size_t width = 1, size = this->size(); width < size; width *= 2) {
+            for (size_t i = 0; i < size; i += 2 * width) {
+                size_t left  = i;
+                size_t mid   = i + width < size ? i + width : size;
+                size_t right = i + 2 * width < size ? i + 2 * width : size;
+                size_t l = left, r = mid, t = 0;
+                while (l < mid && r < right) {
+                    if ((*this)[l] < (*this)[r])
+                        aux_ptr[t++] = (*this)[l++];
+                    else
+                        aux_ptr[t++] = (*this)[r++];
+                }
+                while (l < mid) aux_ptr[t++] = (*this)[l++];
+                while (r < right) aux_ptr[t++] = (*this)[r++];
+                for (size_t k = 0; k < t; ++k) (*this)[left + k] = aux_ptr[k];
+            }
+        }
+    }
+};
+template <erim::GenericIterator it, erim::GenericIterator... its>
+struct erim::IterativeList {
+    static constexpr inline size_t max_size = (its.size() + ... + it.size());
+    static constexpr inline size_t N        = (sizeof...(its) + 1);
+
+    using const_element_t = decltype(it)::element_t;
+    using element_t       = erim::REMOVE::const_t<const_element_t>;
+    using Iterator        = erim::GenericIterator<const_element_t>;
+
+    using array_t = array_t<Iterator, N>;
+    using Array_t = Array<Iterator, N>;
+
+   private:
+    static constexpr inline array_t list = {it, its...};
+
+    static constexpr erim::Array<element_t, max_size> Merge = []() {
+        erim::Array<element_t, max_size> val;
+        size_t i = 0;
+        for (auto& v : list)
+            for (auto k : v) val.data[i++] = k;
+        return val;
+    }();
+
+    static constexpr inline Array_t SortedList = [] {
+        auto a = erim::Array(list).copy();
+        decltype(a) aux;
+        a.it().sort_with(aux);
+        return a;
+    }();
+
+    static constexpr inline Array_t SegmentedList = [] {
+        auto builder = [](DataSet* d) {
+            
+        };
+        auto a = erim::Array(list).copy();
+        decltype(a) aux;
+        a.it().sort_with(aux);
+        return a;
+    }();
+   public:
+    static constexpr auto& merge       = Merge.data;
+    static constexpr auto& sorted_list = SortedList.data;
+};
+
+export namespace erim
+{
+    template <typename T, typename U>
+    inline constexpr bool
+    operator==(const Iterative<T> lhs, const Iterative<U> rhs) noexcept {
+        if constexpr (lhs.size() != rhs.size()) return false;
+        size_t i = 0;
+        while (i != lhs.size() && lhs[i] == rhs[i]) ++i;
+        return i == lhs.size();
+    }
+    template <typename T, typename U>
+    inline constexpr bool
+    operator!=(const Iterative<T> lhs, const Iterative<U> rhs) noexcept {
+        return !(lhs == rhs);
+    }
+    template <typename T, typename U>
+    inline constexpr bool
+    operator<(const Iterative<T> lhs, const Iterative<U> rhs) noexcept {
+        size_t min_size = (lhs.size() < rhs.size()) ? lhs.size() : rhs.size();
+        size_t i        = 0;
+        while (i != min_size && lhs[i] == rhs[i]) ++i;
+        if (i != min_size) return lhs[i] < rhs[i];
+        return lhs.size() < rhs.size();
+    }
+    template <typename T, typename U>
+    inline constexpr bool
+    operator>(const Iterative<T> lhs, const Iterative<U> rhs) noexcept {
+        return rhs < lhs;
+    }
+    template <typename T, typename U>
+    inline constexpr bool
+    operator<=(const Iterative<T> lhs, const Iterative<U> rhs) noexcept {
+        return !(rhs < lhs);
+    }
+    template <typename T, typename U>
+    inline constexpr bool
+    operator>=(const Iterative<T> lhs, const Iterative<U> rhs) noexcept {
+        return !(lhs < rhs);
+    }
+}

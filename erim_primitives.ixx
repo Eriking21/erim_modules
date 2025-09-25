@@ -4,16 +4,24 @@ module;
 export module erim_primitives;
 
 #define MAX(A, B) ((A) > (B) ? (A) : (B))
-export {
-    /// @b atomic is std::atomic_ref. that's the only true way of using atomics,
-    /// an object is not atomic, atomic are the operations on memory.
 
+export namespace erim
+{
+    /// @b erim::atomic is std::atomic_ref. that's the only true way of using atomics,
+    /// an object is not atomic, atomic are the operations on memory.
     template <typename T>
     using atomic       = std::atomic_ref<T>;
     using atomic_order = std::memory_order;
     using std::atomic_signal_fence;  // NOLINT(misc-unused-using-decls)
     using std::atomic_thread_fence;  // NOLINT(misc-unused-using-decls)
 
+    template <
+        unsigned ALIGNAMENT = alignof(size_t),
+        typename T          = char[ALIGNAMENT]>
+    struct alignas(ALIGNAMENT) aligned_t;
+}
+
+export {
     // clang-format off
     template <typename T> struct Half     { static constexpr bool exists = 0; };
 	template <typename T> struct Signed   { static constexpr bool exists = 0; };
@@ -65,6 +73,17 @@ export {
     using std::uintmax_t;
     using std::uintptr_t;
 
+#if defined(__SIZEOF_INT128__)
+    using int128_t  = __int128_t;
+    using uint128_t = __uint128_t;
+
+    template <> struct Half<int128_t>    { static constexpr bool exists = 1; using type = int64_t;  };
+    template <> struct Half<uint128_t>   { static constexpr bool exists = 1; using type = uint64_t; };
+
+    template <> struct Signed<uint128_t> { static constexpr bool exists = 1; using type = int128_t; };
+    template <> struct Unsigned<int128_t>{ static constexpr bool exists = 1; using type = uint128_t; };   
+#endif
+
 	template <> struct Half<uint16_t>    { static constexpr bool exists = 1; using type = uint8_t;  };
 	template <> struct Half<uint32_t>    { static constexpr bool exists = 1; using type = int16_t;  };
 	template <> struct Half<uint64_t>    { static constexpr bool exists = 1; using type = int32_t;  };
@@ -81,28 +100,17 @@ export {
 	template <> struct Unsigned<int16_t> { static constexpr bool exists = 1; using type = uint16_t; };
 	template <> struct Unsigned<int32_t> { static constexpr bool exists = 1; using type = uint32_t; };
 	template <> struct Unsigned<int64_t> { static constexpr bool exists = 1; using type = uint64_t; };
-  
-#if defined(__SIZEOF_INT128__)
-    using int128_t  = __int128_t;
-    using uint128_t = __uint128_t;
 
-    template <> struct Half<int128_t>    { static constexpr bool exists = 1; using type = int64_t;  };
-    template <> struct Half<uint128_t>   { static constexpr bool exists = 1; using type = uint64_t; };
-
-    template <> struct Signed<uint128_t> { static constexpr bool exists = 1; using type = int128_t; };
-    template <> struct Unsigned<int128_t>{ static constexpr bool exists = 1; using type = uint128_t; };
     // clang-format on
-
     using size_t  = decltype(sizeof(void *));
     using ssize_t = signed_t<size_t>;
-#endif
+}
 
-    template <unsigned ALIGNAMENT, typename T = char[ALIGNAMENT]>
-    struct alignas(ALIGNAMENT) aligned_t;
+
 
     template <unsigned ALIGNAMENT, typename T>
     requires(ALIGNAMENT >= 16)
-    struct alignas(ALIGNAMENT) aligned_t<ALIGNAMENT, T> {
+    struct alignas(ALIGNAMENT) erim::aligned_t<ALIGNAMENT, T> {
         static constexpr unsigned BITS = 8 * MAX(sizeof(T), ALIGNAMENT);
         union {
 #if defined(__SIZEOF_INT128__)
@@ -126,7 +134,7 @@ export {
 
     template <unsigned ALIGNAMENT, typename T>
     requires(ALIGNAMENT == 8)
-    struct alignas(ALIGNAMENT) aligned_t<ALIGNAMENT, T> {
+    struct alignas(ALIGNAMENT) erim::aligned_t<ALIGNAMENT, T> {
         static constexpr unsigned BITS = 8 * MAX(sizeof(T), ALIGNAMENT);
         union {
             int64_t i64[BITS / 64];
@@ -146,7 +154,7 @@ export {
 
     template <unsigned ALIGNAMENT, typename T>
     requires(ALIGNAMENT == 4)
-    struct alignas(ALIGNAMENT) aligned_t<ALIGNAMENT, T> {
+    struct alignas(ALIGNAMENT) erim::aligned_t<ALIGNAMENT, T> {
         static constexpr unsigned BITS = 8 * MAX(sizeof(T), ALIGNAMENT);
         union {
             int32_t i32[BITS / 32];
@@ -162,7 +170,7 @@ export {
 
     template <unsigned ALIGNAMENT, typename T>
     requires(ALIGNAMENT == 2)
-    struct alignas(ALIGNAMENT) aligned_t<ALIGNAMENT, T> {
+    struct alignas(ALIGNAMENT) erim::aligned_t<ALIGNAMENT, T> {
         static constexpr unsigned BITS = 8 * MAX(sizeof(T), ALIGNAMENT);
         union {
             int16_t i16[BITS / 16];
@@ -177,7 +185,7 @@ export {
 
     template <unsigned ALIGNAMENT, typename T>
     requires(ALIGNAMENT == 1)
-    struct alignas(ALIGNAMENT) aligned_t<ALIGNAMENT, T> {
+    struct alignas(ALIGNAMENT) erim::aligned_t<ALIGNAMENT, T> {
         static constexpr unsigned BITS = 8 * MAX(sizeof(T), ALIGNAMENT);
         union {
             int16_t i16[BITS / 16];
@@ -188,4 +196,4 @@ export {
             T value;
         };
     };
-}
+

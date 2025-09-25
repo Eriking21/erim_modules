@@ -1,0 +1,249 @@
+
+template <typename T, bool must_delete, size_t alignment>
+struct erim::concurrent::SizedBuffer : erim::concurrent::Base {
+   private:
+    using atomic = erim::atomic<size_t>;
+    using enum erim::atomic_order;
+    alignas(64) const size_t size;
+    alignas(64) size_t count;
+    T* items;
+
+    static constexpr std::align_val_t items_sz{alignment > 64 ? alignment : 64};
+   public:
+    inline constexpr ~SizedBuffer() noexcept {
+        if constexpr (must_delete) ::operator delete(items, items_sz);
+    }
+    inline constexpr SizedBuffer(size_t size, T* items) noexcept
+        : size{size}, count{0}, items{items} {}
+    inline constexpr SizedBuffer(size_t size) noexcept requires(not must_delete)
+        : size{size},
+          count{0},
+          items{static_cast<T*>(
+              ::operator new(sizeof(T) * size, items_sz, std::nothrow)
+          )} {}
+
+    inline constexpr void reset() { atomic(count).store(0, release); }
+
+    inline constexpr void push(const T* items, const size_t num = 1) noexcept {
+        const size_t idx = atomic(count).fetch_add(num, acquire);
+        for (size_t i = 0; i < num; ++i) items[idx + i] = items[i];
+    }
+
+    inline constexpr T* pop() noexcept {
+        const size_t idx = atomic(count).fetch_add(1, acquire);
+        if (idx > size) return 0;
+        return &items[idx];
+    }
+};
+
+template <typename T, unsigned N>
+struct erim::concurrent::Buffer : erim::concurrent::Base {
+   private:
+    using Node   = erim::Node<T>;
+    using atomic = erim::atomic<Node*>;
+    using enum erim::atomic_order;
+    Node* ptr;
+    static constexpr auto spot = (sizeof(Node) - sizeof(T)) / sizeof(Node*);
+
+   public:
+    using LocalVector = erim::thread::Vector<Node, N>;
+
+    inline constexpr Buffer() noexcept = default;
+    inline constexpr ~Buffer() noexcept {
+        Node* tgt_0 = atomic(ptr).exchange(0, relaxed);  //its supposed to local
+        Node* tgt_1;
+
+        while (1) {
+            if (!tgt_0) break;
+            tgt_1 = tgt_0[N - 1].next;
+            delete[] tgt_0;
+            if (!tgt_1) break;
+            tgt_0 = tgt_1[N - 1].next;
+            delete[] tgt_1;
+        }
+    }
+
+    /// @brief
+    //  Search for the item while spin lock to aquire last slot
+    //  Insert item, then release lock. Storage must be thread-safe.
+    inline constexpr bool push(const T& item, LocalVector& storage) noexcept {
+        Node** next    = &ptr;
+        Node* expected = 0;
+        size_t jmps    = 0;
+        if (!storage && !(storage = LocalVector())) return false;
+        while (true) {
+            if (next[0]->item == item) return true;
+            while (true) {
+                if (atomic(next[0]).compare_exchange_strong(
+                        expected, (Node*)UINTPTR_MAX, acq_rel, relaxed
+                    )) {
+                    if (jmps %= N) [[likely]] {
+                        next[spot]->item = item;
+                        atomic(next[0]).store(next[spot], release);
+                    }
+                    else {
+                        storage[0][0].item = item;
+                        atomic(next[0]).store(storage[0], release);
+                        storage = LocalVector();
+                    }
+                    return true;
+                }
+                else if (expected != (Node*)UINTPTR_MAX) [[likely]] {
+                    next     = &expected->next;
+                    expected = nullptr;
+                    ++jmps;
+                    break;
+                }
+            }
+        }
+    }
+};
+
+
+
+template <typename T, erim::Array... arrs>
+struct erim::Join {
+    static constexpr size_t sizes[sizeof...(arrs)] = {sizeof(arrs)...};
+    static constexpr size_t total                  = (0 + ... + sizeof(arrs));
+    static constexpr const size_t N                = sizeof...(arrs);
+
+    using Iterator = Iterator<erim::MAKE::const_t<T>>;
+    using Array_t  = Array<Iterator, N>;
+    using array_t  = array_t<Iterator, N>;
+    static constexpr array_t result{arrs.it()...};
+};
+
+template <typename T, erim::Array... arrays>
+struct erim::Merge : Join<T, arrays...> {
+    struct Temp : Array<T, Merge::Join::total> {
+        using Temp::Array::data;
+
+        inline constexpr Temp() noexcept {
+            for (size_t k = 0, i = 0, j = 0; i < Merge::Join::N; ++i, j = 0)
+                for (; j != Merge::Join::result.it()[i].size(); ++j, ++k)
+                    data[k] = Merge::Join::result.it()[i][j];
+        }
+    } static constexpr temp;
+    static constexpr auto& result{temp.data};
+};
+
+template <typename T, erim::Array... arrays>
+struct erim::SortJoin : Join<T, arrays...> {
+    struct Temp : Join<T, arrays...>::Array_t {
+        using Array_t = Join<T, arrays...>::Array_t;
+
+        inline constexpr Temp()
+            : Array_t{Array(Join<T, arrays...>::result).copy()} {
+            Array_t temp;
+            this->it().sort(temp.it());
+        }
+    } static constexpr temp;
+    static constexpr auto& result{temp.data};
+};
+/* 
+// template <typename T, erim::Array... arrays>
+// struct erim::SortMerge : SortJoin<T, arrays...> {
+//     struct Temp : Array<T, SortMerge::SortJoin::total> {
+//         using Temp::Array::data;
+
+//         inline constexpr Temp() noexcept {
+//             for (size_t k = 0, i = 0; i < SortMerge::SortJoin::N; ++i)
+//                 for (size_t j = 0; j != SortMerge::SortJoin::result[i].max();
+//                      ++j, ++k)
+//                     data[k] = SortMerge::SortJoin::result[i][j];
+//         }
+//     } static constexpr temp;
+//     static constexpr auto& result{temp.data};
+// };
+
+// template <typename T>
+// struct erim::varlen_t {
+//     struct Data;
+//     Data* ptr;
+
+//     inline constexpr T& operator[](size_t num) noexcept { return begin()[num]; }
+//     inline constexpr size_t max() noexcept { return ptr ? ptr->num : 0; }
+//     inline constexpr T* begin() noexcept { return ((T*)(ptr + 1)); }
+//     inline constexpr T* end() noexcept { return begin() + max(); }
+
+//     using random_callback_t = typename Data::Random_forEach::random_callback_t;
+
+//     constexpr inline void random_foreach(random_callback_t fun) noexcept {
+//         return Data::Random_forEach::random_forEach(ptr, fun);
+//     }
+//     inline constexpr varlen_t(size_t num) noexcept : ptr{Data::create(num)} {}
+//     inline constexpr varlen_t(size_t num, random_callback_t fun) noexcept
+//         : ptr{Data::create(num, fun)} {}
+//     inline constexpr ~varlen_t() noexcept { Data::destruct(ptr); }
+
+//     inline constexpr void swap(varlen_t other) noexcept {
+//         Data* new_ptr = other.ptr;
+//         other.ptr     = this->ptr;
+//         this->ptr     = new_ptr;
+//     }
+
+//     inline constexpr operator bool() noexcept { return ptr; }
+//    private:
+//     inline constexpr varlen_t(const varlen_t&) noexcept            = delete;
+//     inline constexpr varlen_t& operator=(const varlen_t&) noexcept = delete;
+//     inline constexpr varlen_t(varlen_t&&) noexcept                 = default;
+//     inline constexpr varlen_t& operator=(varlen_t&&) noexcept      = default;
+// };
+
+// template <typename T>
+// struct erim::varlen_t<T>::Data : Random_forEach<Data, T, size_t> {
+//     using Data::Random_forEach::random_forEach;
+//     using typename Data::Random_forEach::random_callback_t;
+
+//     size_t num;
+//     static inline constexpr size_t max(Data* ptr) noexcept {
+//         return ptr ? ptr->num : 0;
+//     }
+
+//     static inline constexpr T* get_content_address(Data* ptr) noexcept {
+//         return ((T*)(ptr + 1));
+//     }
+
+//     static inline constexpr Data* create(size_t num) noexcept {
+//         Data* ptr = (Data*)malloc(sizeof(Data) + sizeof(T) * num);
+//         if (ptr) ptr->num = num;
+//         return ptr;
+//     }
+
+//     static inline constexpr Data*
+//     create(size_t num, random_callback_t callback) noexcept {
+//         Data* ptr = (Data*)malloc(sizeof(Data) + sizeof(T) * num);
+//         if (ptr) (ptr->num = num, random_forEach(ptr, callback));
+//         return ptr;
+//     }
+
+//     static inline constexpr void destruct(Data* ptr) noexcept {
+//         random_callback_t f = [](T& v, size_t i) -> size_t {
+//             return (v.~T(), ++i);
+//         };
+//         random_forEach(ptr, f);
+//         return free(ptr);
+//     }
+//    private:
+//     inline constexpr Data(size_t num) noexcept : num{num} {}
+//     inline constexpr Data(const Data&) noexcept            = default;
+//     inline constexpr Data& operator=(const Data&) noexcept = default;
+//     inline constexpr Data(Data&&) noexcept                 = default;
+//     inline constexpr Data& operator=(Data&&) noexcept      = default;
+//     inline constexpr ~Data() noexcept                      = default;
+// }; */
+
+
+    ///you can use idx as pivot, or just, loop while idx < max
+    ///@code return ++idx;
+    template <typename Data, typename T, typename U = size_t>
+    struct Random_forEach {
+        using random_callback_t     = U (*)(T&, U idx);
+        using random_callback_ref_t = U (*const)(T&, U idx);
+
+        static inline constexpr void
+        random_forEach(Data* ptr, random_callback_t callback) noexcept {
+            for (size_t idx = 0, max = Data::max(ptr); idx < max;
+                 idx = callback(Data::get_content_address(ptr)[idx], idx));
+        }
+    };

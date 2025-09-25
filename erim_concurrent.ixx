@@ -1,256 +1,166 @@
-module;
-#include <new>
+/// @copyright (c) 2025, Erivaldo Jair Xavier Mate
+/// @note
+//  - atomic: like std::atomic_ref
+//  - atomic_order: like std::memory_order
+/** @brief
+
+        This @b interface is designed to handle @b Multithreading
+        using separate namespaces and a base Object class for each.
+        the concept is that a concurrent object, is a single instance/resource,
+        controlled by a single thread/worker, and acessible to others as pointers.
+
+        @b Concurrent-objects cannot be constructed arbitrarily, they must be part
+        of a non-concurrent @b thread-local-bject. Only the owning thread is
+        expected to bypass thread-safety mechanisms; all others must use safe access.
+        
+        The @b Pool's purpose is to create, destroy, and delegate tasks to threads,
+        @b erim::thread:::pool manages multiple threads, assigning a task to all,
+        after task completion, concurrents threads will busy wait for a new task,
+        the owner thread may also participate, without the busy wait [it bypasses].
+            - if you need them to wait, set a task to wait or sleep;
+            - if you need multitasking, set a task to fetch from a concurrent::queue.
+            - if you need them to stop, set a null as task, but not as first task.
+
+**/
 export module erim_concurrent;
 import erim_primitives;
+import erim_basic_structs;
 
-///@note,
-//  when you read atomic is not std::atomic is std::atomic_ref
-//  when you read atomic_order is the same as atomic order
-
-export namespace erim
-{
-    template <typename T>
-    struct Node {
-        T item;
-        Node* next = nullptr;
-    };
-
-    // excepts construction and destruction methods all methods are concurrent
-    // designed to be fast and error prone, have restricted use cases
-    namespace concurrent
-    {
-        struct JobClass;
-
-        /// use when you @b "dont_know" how many elements the buffer needs
-        template <typename T, unsigned N = 1>
-        struct Buffer;
-
-        /// use when you @b "already_know" how many elements the buffer needs
-        // all threads must to push or all must to do pop
-        // main thread must to act as arbitre
-        template <
-            typename T,
-            bool must_delete   = 1,
-            size_t T_alignment = alignof(T)>
-        struct SizedBuffer;
-    };
-
-    //classes used for concurrency but no method is concurrent
-    template <typename T>
-    concept AnyJob = true;
-
-    template <typename T>
-    concept AnyThread = true;
-
-    namespace thread
-    {
-        template <typename T, unsigned N>
-        struct Vector;
-
-        template <AnyJob JobClass, AnyThread ThreadType>
-        struct Pool;
-    };
+// clang-format off
+export namespace erim {
+    namespace thread { struct Object; }
+    namespace concurrent { struct Object; }
 }
 
-template <typename T, unsigned N>
-struct erim::thread::Vector {
-    T (*data)[N];
-    constexpr inline operator auto &() const noexcept { return data; }
-    Vector(const Vector&)            = default;
-    Vector& operator=(const Vector&) = default;
-    Vector(Vector&&)                 = default;
-    Vector& operator=(Vector&&)      = default;
-    inline constexpr ~Vector() noexcept { delete[] data; };
-    inline constexpr Vector() noexcept : data{new(std::nothrow) T[1][N]} {};
+export namespace erim::thread {
+    template <typename Thread, typename Resource, auto first_task>
+    struct Pool;
 };
 
-struct erim::concurrent::JobClass {
-    using work_t                 = bool (JobClass::*)() noexcept;
-    static constexpr work_t stop = 0;
+export namespace erim::concurrent {
+    template <typename Resource>
+    using task_t = void (*)(Resource*) noexcept;
+    
+    template <typename Resource, auto>
+    struct Task {};
+    
+    template <typename Resource, auto fn>
+    requires requires(task_t<Resource> task__, Resource& r) {
+        static_cast<Object&>(r), task__ = Task<Resource, fn>::callback;}
+    constexpr inline task_t<Resource> task_v {Task<Resource, fn>::callback};
+}
+// clang-format on
+
+///@b  erim::concurrent::Object
+struct alignas(64) erim::concurrent::Object {
    private:
-    work_t work;
-    using atomic = atomic<work_t>;
-    static_assert(atomic::is_always_lock_free, "Unsupported Platform");
+    friend struct erim::thread::Object;
+    inline constexpr Object() noexcept = default;
 
    public:
-    constexpr inline JobClass(work_t work) noexcept : work{work} {}
-    constexpr inline JobClass() noexcept : work{stop} {}
-    constexpr inline ~JobClass() noexcept = default;
-    JobClass(const JobClass&)             = delete;
-    JobClass& operator=(const JobClass&)  = delete;
-    JobClass(JobClass&&)                  = delete;
-    JobClass& operator=(JobClass&&)       = delete;
-
-    inline void change_work(work_t other) {
-        atomic(work).store(other, atomic_order::release);
-    }
-
-    static inline void execute(JobClass* j) {
-        auto task = atomic(j->work).load(atomic_order::acquire);
-        if (task == stop) return;
-        while (1) {
-            while ((j->*task)());
-            while (1) {
-                auto other_task = atomic(j->work).load(atomic_order::acquire);
-                if (other_task == task) continue;
-                if (task == stop) return;
-                task = other_task;
-                break;
-            }
-        }
-    }
-   private:
-    template <AnyJob JobClass, AnyThread ThreadType>
-    friend struct erim::thread::Pool;
-    inline constexpr void execute_alone() {
-        while ((this->*work)() == true);
-        return;
-    }
+    inline constexpr Object& operator=(Object&&) noexcept      = default;
+    inline constexpr Object(const Object&) noexcept            = default;
+    inline constexpr Object& operator=(const Object&) noexcept = default;
+    inline constexpr Object(Object&&) noexcept                 = default;
+    inline constexpr ~Object() noexcept                        = default;
 };
 
-template <erim::AnyJob JobClassDerived, erim::AnyThread ThreadType>
-struct erim::thread::Pool {
-    JobClassDerived job;
-    ThreadType* threads;
-
-    using work_t = bool (JobClassDerived::*)() noexcept;
-
-    Pool(const Pool&)            = default;
-    Pool& operator=(const Pool&) = default;
-    Pool(Pool&&)                 = default;
-    Pool& operator=(Pool&&)      = default;
-
-    inline constexpr void work_together() { return job.execute_alone(); }
-    inline constexpr void change_work(work_t cwork) {
-        job.change_work(static_cast<erim::concurrent::JobClass::work_t>(cwork));
-    }
-    inline constexpr Pool(unsigned num, work_t cwork) noexcept
-        : job{static_cast<erim::concurrent::JobClass::work_t>(cwork)},
-          threads(new(std::nothrow) ThreadType[num]) {
-        for (unsigned i = 0; i < num; ++i) {
-            threads[i] = ThreadType(JobClassDerived::execute, &job);
-        };
-    }
-    constexpr inline ~Pool() noexcept {
-        change_work(0);
-        delete[] threads;
-    }
-};
-
-template <typename T, bool must_delete, size_t alignment>
-struct erim::concurrent::SizedBuffer {
-   private:
-    ///@note
-    // My atomic template is like std::atomic_ref
-    // My atomic_order is std::memory_order
-    using atomic = atomic<size_t>;
-    using enum atomic_order;
-    alignas(64) const size_t size;
-    alignas(64) size_t count;
-    T* items;
-
-    SizedBuffer(const SizedBuffer&)            = delete;
-    SizedBuffer& operator=(const SizedBuffer&) = delete;
-    SizedBuffer(SizedBuffer&&)                 = delete;
-    SizedBuffer& operator=(SizedBuffer&&)      = delete;
-    static constexpr std::align_val_t items_sz{alignment > 64 ? alignment : 64};
+///@b  erim::thread::Object
+struct erim::thread::Object {
+   protected:
+    static inline constexpr concurrent::Object create() noexcept { return {}; };
+    inline constexpr Object(const Object&) noexcept            = default;
+    inline constexpr Object& operator=(const Object&) noexcept = default;
+    inline constexpr Object(Object&&) noexcept                 = default;
+    inline constexpr Object& operator=(Object&&) noexcept      = default;
+    inline constexpr Object() noexcept                         = default;
    public:
-    inline constexpr ~SizedBuffer() noexcept {
-        if constexpr (must_delete) ::operator delete(items, items_sz);
-    }
-    inline constexpr SizedBuffer(size_t size, T* items) noexcept
-        : size{size}, count{0}, items{items} {}
-    inline constexpr SizedBuffer(size_t size) noexcept requires(not must_delete)
-        : size{size},
-          count{0},
-          items{static_cast<T*>(
-              ::operator new(sizeof(T) * size, items_sz, std::nothrow)
-          )} {}
+    inline constexpr ~Object() noexcept = default;
+};
 
-    inline constexpr void reset() { atomic(count).store(0, release); }
+template <typename Resource, void (*CallBack)(Resource*) noexcept>
+struct erim::concurrent::Task<Resource, CallBack> {
+    using task_t = erim::concurrent::task_t<Resource>;
+    static constexpr inline task_t callback = CallBack;
+};
 
-    inline constexpr void push(const T* items, const size_t num = 1) noexcept {
-        const size_t idx = atomic(count).fetch_add(num, acquire);
-        for (size_t i = 0; i < num; ++i) items[idx + i] = items[i];
-    }
+template <typename Resource, auto val>
+requires(val == 0)
+struct erim::concurrent::Task<Resource, val> {
+    static constexpr inline erim::concurrent::task_t<Resource> callback = 0;
+};
 
-    inline constexpr T* pop() noexcept {
-        const size_t idx = atomic(count).fetch_add(1, acquire);
-        if (idx > size) return 0;
-        return &items[idx];
+template <typename Resource, bool (*CallBack)(Resource)>
+struct erim::concurrent::Task<Resource, CallBack> {
+    static constexpr inline void callback(Resource* obj) noexcept {
+        while (CallBack(obj));
     }
 };
 
-template <typename T, unsigned N>
-struct erim::concurrent::Buffer {
-   private:
-    ///@note
-    // My atomic template is like std::atomic_ref
-    // My atomic_order is std::memory_order
-    using Node   = erim::Node<T>;
-    using atomic = atomic<Node*>;
-    using enum atomic_order;
-    Node* ptr;
-    static constexpr auto spot = (sizeof(Node) - sizeof(T)) / sizeof(Node*);
-
-    Buffer(const Buffer&)            = delete;
-    Buffer& operator=(const Buffer&) = delete;
-    Buffer(Buffer&&)                 = delete;
-    Buffer& operator=(Buffer&&)      = delete;
-   public:
-    using LocalVector = erim::thread::Vector<Node, N>;
-
-    inline constexpr Buffer() noexcept = default;
-    inline constexpr ~Buffer() noexcept {
-        Node* tgt_0 = atomic(ptr).exchange(0, relaxed);  //its supposed to local
-        Node* tgt_1;
-
-        while (1) {
-            if (!tgt_0) break;
-            tgt_1 = tgt_0[N - 1].next;
-            delete[] tgt_0;
-            if (!tgt_1) break;
-            tgt_0 = tgt_1[N - 1].next;
-            delete[] tgt_1;
-        }
-    }
-
-    /// @brief,
-    //  Keep Searching the item until found or acquire the lock at end of Chain,
-    //  put the item there then release the lock, assert storage is thread_safe.
-    inline constexpr bool push(const T& item, LocalVector& storage) noexcept {
-        Node** next    = &ptr;
-        Node* expected = 0;
-        size_t jmps    = 0;
-        if (!storage && !(storage = LocalVector())) return false;
-        while (true) {
-            if (next[0]->item == item) return true;
-            while (true) {
-                if (atomic(next[0]).compare_exchange_strong(
-                        expected, (Node*)UINTPTR_MAX, acq_rel, relaxed
-                    )) {
-                    if (jmps %= N) [[likely]] {
-                        next[spot]->item = item;
-                        atomic(next[0]).store(next[spot], release);
-                    }
-                    else {
-                        storage[0][0].item = item;
-                        atomic(next[0]).store(storage[0], release);
-                        storage = LocalVector();
-                    }
-                    return true;
-                }
-                else if (expected != (Node*)UINTPTR_MAX) [[likely]] {
-                    next     = &expected->next;
-                    expected = nullptr;
-                    ++jmps;
-                    break;
-                }
-            }
-        }
+template <typename Resource, bool (Resource::*Method)()>
+struct erim::concurrent::Task<Resource, Method> {
+    static constexpr inline void callback(Resource* obj) noexcept {
+        while ((obj->*Method)());
     }
 };
 
-// concurrent::Buffer<int, 4> a;
-// thread::Vector<Node<int>, 4> buf;
-// void aj() { a.push(1, buf); }
+template <typename Resource, void (Resource::*Method)()>
+struct erim::concurrent::Task<Resource, Method> {
+    static constexpr inline void callback(Resource* obj) noexcept {
+        (obj->*Method)();
+    }
+};
+
+// template <typename Thread, typename Resource, auto first_task>
+// struct erim::thread::Pool : erim::thread::Object {
+//    private:
+//     using enum erim::atomic_order;
+//     using task_t           = erim::concurrent::task_t<Resource>;
+//     using const_atomic     = erim::atomic<const task_t>;
+//     using atomic           = erim::atomic<task_t>;
+//     using threads_vector_t = erim::varlen_t<Thread>;
+//     struct SharedInstance : erim::concurrent::Object {
+//         Pool* const pool;
+//         inline constexpr void operator()() noexcept {
+//             for (task_t run = pool->copy_work(); run != 0;) [[likely]] {
+//                 run(&pool->resource);
+//                 for (task_t old = run; (run = pool->copy_work()) == old;);
+//             }
+//         };
+//     };
+
+//     template <auto task>
+//     static constexpr inline task_t task_v = concurrent::task_v<Resource, task>;
+//     task_t task;
+//     threads_vector_t threads;
+//     Resource resource;
+//    public:
+//     static_assert(task_v<first_task> != 0, "Invalid First Task, choose other.");
+//     using resource_t = Resource;
+//     using threads_t  = Thread;
+
+//     inline constexpr ~Pool() noexcept { change_work<>(); }
+//     inline constexpr Pool(unsigned num, auto... vals) noexcept
+//         : task{task_v<first_task>},
+//           threads{num},
+//           resource{Object::create(), vals...}  //
+//     {
+//         for (threads_t& thread : threads)
+//             new (&thread) threads_t{SharedInstance{Object::create(), this}};
+//     }
+//     inline constexpr Resource& get_resource() noexcept { return resource; }
+
+//     inline const task_t copy_work() const noexcept {
+//         return const_atomic(task).load(acquire);
+//     }
+//     inline constexpr void work() noexcept { task(&resource); }
+
+//     template <auto new_task>
+//     inline constexpr void change_and_work() noexcept {
+//         change_work<new_task>(), work();
+//     }
+//     template <auto new_task = 0>
+//     inline constexpr void change_work() noexcept {
+//         atomic(task).store(task_v<new_task>, release);
+//     }
+// };
