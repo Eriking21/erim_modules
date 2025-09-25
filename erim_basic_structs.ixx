@@ -362,12 +362,17 @@ struct erim::Vector : Iterative<Vector<T>>, Container<Varlena<T>*> {
     }
 
     inline constexpr ~Vector() noexcept {
-        for (auto& v : varlena()) v.~T();
+        for (auto& v : *this) v.~T();
         delete this->data;
     }
 
+    inline constexpr Vector(const Varlena<T>& varlena) noexcept
+        : Container<Varlena<T>*>{varlena} {
+        varlena = 0;
+    }
+    
     template <size_t N>
-    inline constexpr Vector(Varlena<T, N>*&& varlena = 0) noexcept
+    inline constexpr Vector(Varlena<T, N> * && varlena = 0) noexcept
         : Container<Varlena<T>*>{varlena} {
         varlena = 0;
     }
