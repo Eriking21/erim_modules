@@ -12,7 +12,6 @@
 **/
 module;
 #include <new>
-#include <stdlib.h>
 export module erim_basic_structs;
 import erim_primitives;
 import erim_match_any;
@@ -27,6 +26,12 @@ namespace erim
     export {
         template <typename T, auto... singularities>
         struct Container;
+
+        template <typename T>
+        struct Iterator;
+
+        template <typename T>
+        struct Vector;
 
         ///@b Array, Sequence of values with same Type, contains[T data[N]]
         template <typename T, size_t N>
@@ -62,7 +67,7 @@ template <>
 struct erim::Iterative<void> {
    private:
     static constexpr void
-    real_sort(const auto iterator, const size_t size, const auto aux) noexcept {
+    real_sort(const auto iterator, const size_t size, auto aux) noexcept {
         for (size_t width = 1; width < size; width *= 2) {
             for (size_t i = 0; i < size; i += 2 * width) {
                 size_t left  = i;
@@ -83,9 +88,9 @@ struct erim::Iterative<void> {
     }
    protected:
     template < AnyIterable T, typename U>
-    static inline constexpr void sort(T* it, U aux) noexcept {
-        auto& indirection = real_sort<decltype(it->begin()), U>;
-        return indirection(it->begin(), it->count(), aux);
+    static inline constexpr void sort(T& it, U aux) noexcept {
+        auto& indirection = real_sort<decltype(it.begin()), U>;
+        return indirection(it.begin(), it.count(), aux);
     }
 
     template <AnyIterable T, AnyIterable U>
@@ -122,6 +127,14 @@ struct erim::Iterative<void> {
 };
 template <typename CRTP>
 struct erim::Iterative : erim::Iterative<void> {
+
+   private:
+    inline constexpr decltype(auto) items() const noexcept {
+        return ((const CRTP&)*this);
+    }
+    inline constexpr decltype(auto) items() noexcept { return ((CRTP&)*this); }
+
+   public:
     /// **** @brief CRTP redundant methods ***
     /// @b ((CRTP&)*this).begin()   @c always_required
     /// @b ((CRTP&)*this)[<size_t>] @c always_optional
@@ -129,45 +142,45 @@ struct erim::Iterative : erim::Iterative<void> {
     /// @b ((CRTP&)*this).count()   @c optional_when_end()_method_is_defined
 
     inline constexpr decltype(auto) end() const noexcept {
-        return ((CRTP&)*this).begin() + ((CRTP&)*this).count();
+        return items().begin() + items().count();
     }
 
     inline constexpr decltype(auto) end() noexcept {
-        return ((CRTP&)*this).begin() + ((CRTP&)*this).count();
+        return items().begin() + items().count();
     }
 
-    inline constexpr decltype(auto) count() const noexcept {
-        return ((CRTP&)*this).end() - ((CRTP&)*this).begin();
+    inline constexpr size_t count() const noexcept {
+        return items().end() - items().begin();
     }
 
-    inline constexpr decltype(auto) count() noexcept {
-        return ((CRTP&)*this).end() - ((CRTP&)*this).begin();
+    inline constexpr size_t capacity() const noexcept {
+        return items().count();
     }
 
-    inline constexpr decltype(auto) operator[](size_t i) const noexcept {
-        return ((CRTP&)*this).begin()[i];
+    inline constexpr decltype(auto) operator[](const size_t i) const noexcept {
+        return items().begin()[i];
     }
 
-    inline constexpr decltype(auto) operator[](size_t i) noexcept {
-        return ((CRTP&)*this).begin()[i];
+    inline constexpr decltype(auto) operator[](const size_t i) noexcept {
+        return items().begin()[i];
     }
 
     //sort
     template <typename T>
     inline constexpr void sort_with_aux(T aux) noexcept {
-        erim::Iterative<void>::sort(((CRTP*)this), aux);
+        erim::Iterative<void>::sort(items(), aux);
     }
 
     template <typename Trivial>
     inline constexpr void sort_with_aux() noexcept {
         Trivial aux;
-        erim::Iterative<void>::sort(((CRTP*)this), aux);
+        erim::Iterative<void>::sort(items(), aux);
     }
+
     inline bool sort() noexcept {
-        auto* aux = new (std::nothrow) CRTP::element_t[((CRTP&)*this).count()];
+        erim::Vector<typename CRTP::element_t> aux{items().count()};
         if (!aux) return 0;
         sort_with_aux(aux);
-        delete[] aux;
         return 1;
     }
 
@@ -251,6 +264,21 @@ struct erim::Container {
     }
 };
 
+template <typename T>
+struct erim::Iterator : Iterative<Iterator<T>> {
+    T* begin_v;
+    T* end_v;
+
+    inline constexpr Iterator(T* const begin_ = 0, const size_t N = 0) noexcept
+        : begin_v{begin_}, end_v{begin_ + N} {}
+
+    inline constexpr Iterator(T* const begin_, T* const end_) noexcept
+        : begin_v{begin_}, end_v{end_} {}
+
+    inline constexpr T* begin() noexcept { return begin_v; }
+    inline constexpr size_t end() noexcept { return end_v; }
+};
+
 template <typename T, size_t N>
 struct erim::Array : Iterative<Array<T, N>>, Container<T[N]> {
     using element_t = T;
@@ -270,6 +298,8 @@ struct erim::Array : Iterative<Array<T, N>>, Container<T[N]> {
     inline constexpr const T* begin() const noexcept { return this->data; }
     inline constexpr T* begin() noexcept { return this->data; }
 
+    inline constexpr operator T* () noexcept {return *this;}
+    inline constexpr operator const T* () const noexcept {return *this;}
     inline constexpr void sort() noexcept requires(sizeof(arr_t) <= (1 << 20))
     {
         this->template sort_with_aux<Array<T, N>>();
@@ -316,7 +346,7 @@ struct erim::Varlena : Iterative<Varlena<T, N>>,
     inline constexpr Varlena(const arr_t& pp) noexcept : Varlena{} {
         for (size_t i = 0; i < N; ++i) this->data[i] = (T&)pp[i];
     }
-    inline constexpr Varlena(const arr_t&& pp) noexcept : Varlena{} {
+    inline constexpr Varlena(arr_t&& pp) noexcept : Varlena{} {
         for (size_t i = 0; i < N; ++i) this->data[i] = (T&&)pp[i];
     }
 
@@ -342,6 +372,7 @@ struct erim::Varlena : Iterative<Varlena<T, N>>,
     static constexpr size_t sz_offset = [] {
         return Array{{alignof(T) / sizeof(size_t), size_t(2)}}.get_max();
     }();
+
    private:
     inline constexpr Varlena(size_t a, size_t b) noexcept requires(N == 0)
         : VarlenaHead{a, b} {}
@@ -351,11 +382,10 @@ struct erim::Varlena : Iterative<Varlena<T, N>>,
 
 template <typename T>
 struct erim::Vector : Iterative<Vector<T>>, Container<Varlena<T>*> {
-    static constexpr size_t b_offset = Varlena<T>::sz_offset * sizeof(size_t);
-    using varlena_ptr_t              = Varlena<T>*;
-    inline constexpr Varlena<T>*& get_ptr() const noexcept {
-        return this->data;
-    }
+    std::align_val_t a;
+    static constexpr size_t alignment = Varlena<T>::sz_offset * sizeof(size_t);
+    using ptr_t                       = Varlena<T>*;
+    inline constexpr ptr_t& get_ptr() const noexcept { return this->data; }
     inline constexpr T* begin() const noexcept { return get_ptr()->begin(); }
     inline constexpr size_t count() const noexcept {
         return get_ptr() ? get_ptr()->count() : 0;
@@ -363,22 +393,33 @@ struct erim::Vector : Iterative<Vector<T>>, Container<Varlena<T>*> {
 
     inline constexpr ~Vector() noexcept {
         for (auto& v : *this) v.~T();
-        delete this->data;
+        ::operator delete(get_ptr());
     }
 
-    inline constexpr Vector(const Varlena<T>& varlena) noexcept
-        : Container<Varlena<T>*>{varlena} {
-        varlena = 0;
+    Vector(size_t capacity) noexcept {
+        get_ptr() = (ptr_t)::operator new(capacity * sizeof(T) + alignment);
+        if (get_ptr()) *(VarlenaHead*)get_ptr() = VarlenaHead{0, capacity};
     }
-    
+
+    template <typename U>
+    Vector(const Iterative<U>& val, size_t N) noexcept {
+        get_ptr() = (ptr_t)::operator new(N * sizeof(T) + alignment);
+        if (!get_ptr()) return;
+        size_t count             = val.count();
+        (VarlenaHead&)*get_ptr() = VarlenaHead{count, N};
+        for (size_t i = 0; i < count; ++i) (*this)[i] = val[i];
+    }
+
+    template <typename U>
+    Vector(const Iterative<U>& val) noexcept : Vector{val, val.count()} {}
+
+    template <typename U>
+    Vector(const Varlena<T>*& varlena) noexcept
+        : Vector{*varlena, varlena->count()} {}
+
     template <size_t N>
-    inline constexpr Vector(Varlena<T, N> * && varlena = 0) noexcept
+    inline constexpr Vector(Varlena<T, N>*&& varlena = 0) noexcept
         : Container<Varlena<T>*>{varlena} {
         varlena = 0;
-    }
-
-    inline constexpr Vector(size_t N) noexcept {
-        get_ptr() = malloc(b_offset + N * sizeof(T));
-        if (get_ptr()) *get_ptr() = VarlenaHead{0, N};
     }
 };
